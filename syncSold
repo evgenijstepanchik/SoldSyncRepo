@@ -1,0 +1,167 @@
+<?$_SERVER["DOCUMENT_ROOT"] = realpath(dirname(__FILE__)."/../..");
+
+require($_SERVER["DOCUMENT_ROOT"]."/bitrix/modules/main/include/prolog_before.php");
+die();
+use Bitrix\Main;
+use Bitrix\Main\Loader;
+
+
+Loader::includeModule('iblock');
+
+// Loader::IncludeModule("highloadblock");
+// Loader::IncludeModule("catalog");
+
+
+$hlblock = Bitrix\Highloadblock\HighloadBlockTable::getList(array('filter' => array('=TABLE_NAME' => 'Datescript')))->fetch();
+$entity = Bitrix\Highloadblock\HighloadBlockTable::compileEntity($hlblock);
+$entity_data_class = $entity->getDataClass();
+
+$rsData = $entity_data_class::getList(array(
+     	'filter' => array("!=UF_DATE" => false),
+     	'order' => array("ID" => "ASC")
+ ));
+
+while ($arItem = $rsData->fetch()) {
+	$arDate[] = $arItem['UF_DATE']->format('d.m.Y');
+}
+
+if(!in_array(date('d.m.Y'), $arDate)){
+
+	global $USER;
+
+	// $USER->Authorize(44031); //спец юзер для распроданности
+
+	$siteList = Local\Project\Site::getList('UF_IBLOCK', ['filter' => ['UF_ACTIVE' => true], 'order'=>["ID"=>"ASC"]]);
+
+	$filterOrder["UF_STATUS"] = array('P', 'K', 'C');
+	// $filterOrder["<UF_DATE_STATUS"] = date("d.m.Y H:i:s", mktime(0, 0, 0, date("m"), date("d")-2));
+
+	$orders = Local\Hlblock\Order::getList('ID', ['filter'=>$filterOrder , 'select'=>['ID', 'UF_ORDER_ID', 'UF_SITE', 'UF_DATE_STATUS'],'order'=>["UF_ORDER_ID"=>"DESC"]]);
+
+	foreach ($orders as $value) {
+		$arOrders[$value['UF_SITE']][$value['UF_ORDER_ID']] = $value;
+	}
+
+	$filterZakazy[] = 
+	   Array(
+	      "LOGIC"=>"OR",
+	      Array(
+	         "UF_CHECK_SOBRAN"=>false
+	      ),
+	      Array(
+	         "UF_CHECK_SOBRAN"=>0
+	      )
+	   );
+	// $filterZakazy[] = 
+	//    Array(
+	//       "LOGIC"=>"OR",
+	//       Array(
+	//          "UF_NO"=>false
+	//       ),
+	//       Array(
+	//          "UF_NO"=>0
+	//       )
+	//    );
+	 
+	if(!empty($arOrders)){
+
+			// $provider = Local\Hlblock\Provider::getList('UF_XML_ID', ['order'=>["UF_SORT_ID"=>"ASC"], 'select'=>['UF_XML_ID', 'ID', 'UF_NAME', 'UF_SORT', 'UF_SORT_ID']]);
+
+			// foreach ($provider as $xmlid => $value) {
+
+			// 	if(in_array($value['UF_SORT_ID']{0}, [4,6,9]) || $xmlid == 'sklad3'){
+			// 		$arProvider[$xmlid] = $xmlid;
+			// 	}
+			// }
+
+
+		foreach ($arOrders as $key => $value) {
+			$filterZakazy["UF_SITE"] = $key;	
+			$filterZakazy["UF_ORDER_ID"] = array_keys($value);
+
+			$zakazy[$key] = Local\Hlblock\Basket::getList('ID', ['filter'=>$filterZakazy, 'select'=>['ID','UF_PRODUCT_ID', 'UF_ADD_OLD_ORDER', 'UF_SITE', 'UF_ORDER_ID', 'UF_PROPS', 'UF_NO_SIZE', 'UF_NO', 'UF_DATE_SOBRAN'],'order'=>["ID"=>"ASC"]]); //получаем с удаленными вместе);
+			if(!empty($zakazy[$key]))$getZakazy = true;
+											
+			$filterReplace['UF_ID_SITE'] = $key;
+			$filterReplace['UF_ID_ORDER'] = array_keys($value);
+			$replace[$key] = Local\Hlblock\Replace::getList('UF_ID', ['filter'=>$filterReplace]);
+
+			$arFilter = array("XML_ID" => array_column($zakazy[$key], 'UF_PRODUCT_ID'));
+			$arSelect = array(
+				'ID',
+				'IBLOCK_ID',
+				'XML_ID',
+				'PROPERTY_NO_SIZE',
+				'PROPERTY_SOLD'
+				);
+			if(!empty($zakazy[$key])){
+				$resSKU = \CIBlockElement::GetList(
+				    ["ID" => "ASC"],
+				    $arFilter,
+				    false,
+				    false,
+				    $arSelect
+				    );
+				  
+				while($ob = $resSKU->GetNextElement())
+				    {
+				    	$arFields = $ob->GetFields();
+				    	$invert[$siteList[$arFields['IBLOCK_ID']]['ID']][$arFields['XML_ID']] = $arFields['ID'];
+				    	$size[$siteList[$arFields['IBLOCK_ID']]['ID']][$arFields['XML_ID']] = $arFields['PROPERTY_NO_SIZE_VALUE'];
+				    	$sold[$siteList[$arFields['IBLOCK_ID']]['ID']][$arFields['XML_ID']] = $arFields['PROPERTY_SOLD_VALUE'];
+				    }
+			}
+
+		}
+
+		if($getZakazy){
+			$USER->Authorize(10); 
+
+			foreach ($zakazy as $siteID => $valID) {
+
+				foreach ($valID as $zakId => $value) {
+
+					if(!empty($invert[$value['UF_SITE']][$value['UF_PRODUCT_ID']])){
+
+						if(!empty($value['UF_PROPS'])){
+
+							if(!in_array(str_replace(' ', '', $value['UF_PROPS']), explode(";", str_replace(' ', '', $size[$value['UF_SITE']][$value['UF_PRODUCT_ID']]))) && in_array(str_replace(' ', '', $value['UF_PROPS']), explode(";", str_replace(' ', '', $value['UF_NO_SIZE'])))){
+
+				                $arNoSize = explode(";", $value['UF_NO_SIZE']);
+				                $key = array_search(str_replace(' ', '', $value['UF_PROPS']), $arNoSize);
+				                if(!empty($key)){
+				                  unset($arNoSize[$key]);
+				                  $str = implode(";", $arNoSize);
+				                }
+
+					    		Local\Hlblock\Basket::update($id, ['UF_NO_SIZE'=>$str]);
+
+							}elseif(in_array(str_replace(' ', '', $value['UF_PROPS']), explode(";", str_replace(' ', '', $size[$value['UF_SITE']][$value['UF_PRODUCT_ID']]))) && !in_array(str_replace(' ', '', $value['UF_PROPS']), explode(";", str_replace(' ', '', $value['UF_NO_SIZE'])))){
+
+					    		$str = $value['UF_NO_SIZE'].';'.$value['UF_PROPS'];
+
+					    		Local\Hlblock\Basket::update($id, ['UF_NO_SIZE'=>$str]);
+							}
+
+						}else{
+
+							if($sold[$value['UF_SITE']][$value['UF_PRODUCT_ID']] == 'Y' && $value['UF_NO'] != 1){
+								
+								Local\Hlblock\Basket::update($value['ID'], ['UF_NO'=>1]);
+								
+
+							}elseif($value['UF_NO'] == 1 && $sold[$value['UF_SITE']][$value['UF_PRODUCT_ID']] != 'Y'){
+								 
+								Local\Hlblock\Basket::update($value['ID'], ['UF_NO'=>0]);
+								
+							}
+						}	
+					}
+				}
+			}
+
+			$count = count($resItems);
+			echo date('d.m.Y H:i:s').' - '.$count.' ';
+		}
+	}
+}
